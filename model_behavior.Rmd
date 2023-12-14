@@ -1,0 +1,556 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+Import  functions & get participant behavioral data
+```{r}
+library(reshape)
+library(dplyr)
+library(brms)
+library(ggplot2)
+library(rstatix)
+library(ggpubr)
+library(plotrix)
+library(emmeans)
+library(plotrix)
+library(tictoc)
+
+data_root <- '/Users/haileytrier/Downloads/Trier_et_al_2023_code/data/'
+results_root <- '/Users/haileytrier/Downloads/Trier_et_al_2023_code/results/'
+ppt_to_include <- c('sub103','sub105','sub109','sub111','sub117','sub119','sub121','sub123','sub125','sub127','sub129','sub131','sub204','sub208','sub212','sub214','sub216','sub218','sub222','sub224','sub228','sub230','sub232')
+```
+
+Declare function that keeps trying to fit each person’s data until it succeeds (or has tried it ~5 times unsuccessfully), each time increasing iterations and adapt_delta
+```{r}
+fit_behaviour = function(df, my.model){
+  # inputs: df - data to be fitted (for one single subject)
+  #         my.model - stan model, already compiled
+  #         path - path where the subject folders are saved (i.e. it wants path$save variable)
+  #         sub.filename - file name name under which each subject's regressor estimates should be saved
+  # outputs: pars - parameter estimate for the person that was fitted => this is saved in a file (i.e. not an output variable of calling the function directly)
+  max.tries        = 5
+  if (nrow(df)>0){
+    count_divergent = 1 #initialize parameters to keep track off fitting to criterion
+    my.rhat         = 5
+    my.adapt_delta  = 0.8
+    my.iter         = 4000
+    try.count       =  1
+    suppressWarnings(rm(out)) # rm output if it exists, and suppress warning if it doesn't exist yet
+    while (count_divergent >0 || my.rhat>=1.1){
+      out = update(my.model,newdata=df,refresh=0,iter=my.iter,control=list(adapt_delta=my.adapt_delta))
+      # check divergences, rhat and rerun if necessary
+      np              = nuts_params(out)
+      count_divergent = sum(subset(np,Parameter=="divergent__")$Value)
+      my.rhat         = rhat(out)[!(names(rhat(out))%in%c('lp__','ndt'))] %>% max(.)# ,na.rm=TRUE) # don't check rhat for lp__
+      if (is.na(my.rhat)){ # sometimes some values are NA, we shouldn't ignore this, but rather rerun
+        my.rhat=9
+      }
+      my.iter         = my.iter*2
+      my.adapt_delta  = my.adapt_delta + (1-my.adapt_delta)*0.5
+      try.count       = try.count+1
+      if (try.count>max.tries){
+        break
+      }
+    }
+    # Note down whether fitting was successful and extract parameters if successful
+    par.names = rownames(fixef(out)) # extract parameter names so that the code can be used for each model
+    
+    if (try.count<=max.tries){
+      pars = data.frame(Estimate=fixef(out)[,1]) %>% t() %>% as.data.frame() %>% # extract fixed effects / 1 is the Estimate (other columns are the est. error and 2.5% and 97.5% interval)
+        mutate(ID = unique(df$ID), fitted.ok.flag = 1)
+    } else {
+      pars           = data.frame(Estimate=fixef(out)[,1]) %>% t() %>% as.data.frame() # first extract fixed effects as well but just to get the column names, then replace the ill-fitted parameters with NA
+      pars[1,]       = NA # then replace the estimated beta values by NA because the model fit didn't work for this subject
+      pars           = pars %>% mutate(ID = unique(df$ID), fitted.ok.flag = 0)
+    }
+    output=list()
+    output$pars=pars
+    output$residuals=as.data.frame(residuals(out))
+    return(output)
+    #save(pars,file=file.path(path$save,paste0('s',str_pad(is, 4, pad = "0")), sub.filename)) # str_pad creates a string such as s0001
+  }
+}
+```
+
+Declare function to test assumptions and conduct t-tests on all coefficients:
+```{r}
+run_ttests = function(df, param_names){
+  # Tests assumptions and returns t-test results for an input dataframe in the following format:
+  # nrow: number of participants; columns: parameters
+  # param_names is an array with strings corresponding to parameters to test.
+  ttests <- data.frame(Parameter=character(),pval=numeric(),t=numeric(),CI_lower=numeric(),
+                     CI_upper=numeric(),degF=numeric(),mean=numeric(),sd=numeric(),se=numeric(),isnormaldist=logical(),
+                     n_outliers=numeric(),
+                     pval_outliers_excluded=logical())
+  
+  for (cname in param_names) {
+    # Check assumptions:
+    outliers = identify_outliers(data=df,variable=cname)
+    isnorm = shapiro.test(df[,cname])
+    if (isnorm$p.value>0.05) {isnormaldist=TRUE} else {isnormaldist=FALSE}
+    
+    # Conduct single sample two-tailed t-test
+    ttest = t.test(df[,cname], mu=0, alternative = "two.sided")
+    
+    # if outliers: see if the result of the test is the same without the outlier
+    if (nrow(outliers)>0) {
+      testdf <- df
+      for (o in c(1:nrow(outliers))) {
+        testdf <- testdf[!testdf$ID==outliers$ID[o],]
+      }
+      ttest2 <- t.test(testdf[,cname], mu=0, alternative = "two.sided")
+      pval_outliers_excluded = ttest2$p.value
+      rm(testdf, ttest2)
+    } else {
+      pval_outliers_excluded = NaN
+    }
+    
+    ttests <- ttests %>% add_row(Parameter=cname,
+                                 pval=round(ttest$p.value,digits=3),
+                                 t=round(as.numeric(ttest$statistic),digits=2),
+                                 CI_lower=round(ttest$conf.int[1],digits=2),
+                                 CI_upper=round(ttest$conf.int[2],digits=2),
+                                 degF=round(as.numeric(ttest$parameter),digits=2),
+                                 mean=round(as.numeric(ttest$estimate),digits=2),
+                                 sd=round(sd(df[,cname], na.rm=TRUE),digits=2),
+                                 se=round(std.error(df[,cname]),digits=2),
+                                 isnormaldist=isnormaldist,
+                                 n_outliers=nrow(outliers),
+                                 pval_outliers_excluded=pval_outliers_excluded)
+    rm(ttest, outliers, isnorm)
+
+  }
+  # Add significance stars
+  ttests <- ttests %>% mutate(sig = case_when(pval<0.001~'***', pval<0.01~'**', pval<0.05~'*',pval>=0.05~'n.s.'))
+  return(ttests)
+}
+```
+
+##################### Model choice data #####################
+Iterate through participants and perform modeling on an individual level
+```{r}
+tic('Model 1')
+model1_results <- data.frame(ID=character(), Intercept=numeric(), rewAvail_currTP=numeric(),
+                             timePressure=numeric(),
+                             fitted_ok=logical(),y_var=character())
+my.priors = set_prior('normal(0,3)',class='b')
+
+to_run = c(1, 2)
+for (ppt in ppt_to_include) {
+  # Read in and standardize pre-PD phase data
+  dfv <- read.csv(file=paste(data_root,ppt,'_preproExpBehav_prePD_unstandardized_withDisabled.csv',sep=''))
+  dfv <- dfv %>% dplyr::rename(ParticipantID = ParticipantIDs)
+  dfv$Phase <- 'prePD'
+  dfm <- read.csv(file=paste(data_root,ppt,'_preproExpBehav_postPD_unstandardized_withDisabled.csv',sep=''))
+  dfm$Phase <- 'postPD'
+  df <- merge(dfv, dfm, all = TRUE)
+  df <- df[df$disabled == "FALSE",] # remove button presses that occurred when buttons were disabled
+  rm(dfv, dfm)
+  
+  # Standardize and factorize when necessary
+  df$rewAvail_currTP <- scale(df$rewAvail_currTP)
+  df$timePressure <- scale(df$timePressure)
+  df$Phase <- as.factor(df$Phase)
+  df$noOfCones <- ordered(factor(df$noOfCones, levels=c(1, 2, 3, 4)))
+  df$tpEpoch <- scale(df$tpEpoch)
+  df$envIndex <- ordered(factor(df$envIndex, levels=c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26)))
+
+  # Re-code predator speed to make the fastest predator the largest value
+  df <- df %>% mutate(predatorSpeed_recode = case_when(
+    predatorSpeed == 20 ~ 'slow', predatorSpeed == 15 ~ 'medium', predatorSpeed == 10 ~ 'fast'))
+  df$predatorSpeed_recode <- ordered(factor(df$predatorSpeed_recode, levels = c('slow','medium','fast')))
+  
+  # Re-code button name to be simple and then make one-hot columns
+  df <- df %>% mutate(Action_simplified = case_when(
+    buttonID == 1 ~ 'forage', buttonID == 2 ~ 'hide', buttonID > 2 ~ 'check'))
+  df$Action_simplified <- as.factor(df$Action_simplified)
+  
+  # Make one-hot column for checking, foraging, hiding
+  df <- df %>% mutate(check_onehot = case_when(Action_simplified=='check' ~ 1, Action_simplified!='check' ~ 0))
+  df <- df %>% mutate(forage_onehot = case_when(Action_simplified=='forage' ~ 1, Action_simplified!='forage' ~ 0))
+  df <- df %>% mutate(hide_onehot = case_when(Action_simplified=='hide' ~ 1, Action_simplified!='hide' ~ 0))
+  
+  ##################### pre-PD phase model
+  my.model1 = brm(check_onehot ~ 1 + rewAvail_currTP + timePressure + predatorSpeed_recode,
+                  prior=my.priors, 
+                  data=df[df$Phase=='prePD',c('rewAvail_currTP','timePressure','check_onehot','predatorSpeed_recode')], 
+                  iter=1,
+                  family=bernoulli(link='logit')) #shifted_lognormal)
+  outT1 = fit_behaviour(df,my.model1)
+  
+  # Add to master dataframe
+  model1_results <- model1_results %>% add_row(ID = ppt, 
+                             Intercept = outT1$pars$Intercept,
+                             rewAvail_currTP = outT1$pars$rewAvail_currTP,
+                             timePressure = outT1$pars$timePressure,
+                             predatorSpeed_recodefast = outT1$pars$predatorSpeed_recodefast,
+                             predatorSpeed_recodeslow = outT1$pars$predatorSpeed_recodeslow,
+                             fitted_ok = outT1$pars$fitted.ok.flag,
+                             y_var = 'check_onehot')
+  rm(my.model1, outT1)
+}
+
+# write.csv(model1_results,paste0(results_root,'choice_model1_results_reproduced.csv", row.names = FALSE)
+toc()
+```
+
+The above modelling takes 15min. Read in saved modelling results below to reproduce figures faster.
+```{r}
+model1_results <- read.csv(file=paste0(results_root,'choice_model1_results.csv'))
+```
+
+T-tests and plot: Model 1 (Checking ~ reward + timepressure + predatorSpeed + noOfCones)
+```{r}
+ttests <- run_ttests(df=model1_results,param_names=c("rewAvail_currTP","timePressure"))
+fontsize = 22
+offs = 0.2
+points <- melt(model1_results[1:4], id.vars=1:2)
+
+p <- ggplot(ttests, aes(mean, Parameter)) + theme_classic()+
+  geom_point() + geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper)) + 
+  geom_vline(xintercept=0,linetype=3) + 
+  theme(axis.text = element_text(size = fontsize), axis.title=element_text(size=fontsize,face="bold"), plot.title = element_text(size=fontsize)) + 
+  xlab("Mean estimate") + ylab("Parameter") + 
+  scale_y_discrete(labels=c("timePressure"="Time pressure", "rewAvail_currTP"="Reward","mopredatorSpeed_recode"="Predator speed","monoOfCones"="Check dir.","Intercept"="Intercept","predatorSpeed_recodeslow"="Slow speed","predatorSpeed_recodefast"="Fast speed")) + 
+  ggtitle("Contextual effects \non checking")
+tosave <- p + 
+annotate("text", x=ttests$CI_upper[1]+offs, y=ttests$Parameter[1], label=ttests$sig[1],size=7,angle=90) + annotate("text", x=ttests$CI_upper[2]+offs, y=ttests$Parameter[2], label=ttests$sig[2],size=7,angle=90) +
+    geom_jitter(data=points, aes(value, variable), color='#7A7777',shape=21)+ theme_classic()+theme(axis.text = element_text(size = fontsize), axis.title=element_text(size=fontsize,face="bold"), plot.title = element_text(size=fontsize))
+tosave
+#ggsave(tosave, file=paste0(results_root,'prePD_Contextual_effects_on_checking.eps"), device="eps",width=6,height=4) # save image
+#write.csv(ttests,paste0(results_root,'choice_model1_ttests_reproduced.csv", row.names = FALSE) # save ttests
+```
+##################### Model RT data #########################
+First preprocess the data and add some variables. Reaction times have already been
+filtered for outliers when they were extracted in python.
+```{r}
+# Load data frame where RTs separated by transition type:
+df <- read.csv(file=paste0(data_root,'RTs_21Mar2023_OverallOutlierOmit_withDisabled_minMaxTrans0-600.csv'))
+df <- df[df$RT>0,] # omit any rare errors
+
+df <- df %>% mutate(isTransition = case_when(TransitionType=='Forage-to-check'~1,
+                                             TransitionType=='Check-to-check'~-1,
+                                             TransitionType=='Forage-to-forage'~-1,
+                                             TransitionType=='Check-to-forage'~1,
+                                             TransitionType=='Check-to-hide'~1,
+                                             TransitionType=='Forage-to-hide'~1))
+df <- df %>% mutate(firstActionPostDisc = case_when(firstActionPostDisc==1 ~ 1,
+                                                  firstActionPostDisc!=1 ~ -1,
+                                                  is.na(firstActionPostDisc) ~ -1))
+df <- df %>% mutate(preDiscPhase = case_when(Phase=='Pre'~1,
+                                             Phase=='Post'~-1))
+df <- df %>% mutate(checkNotForage = case_when(ActionType=='check'~1,
+                                             ActionType=='forage'~-1,
+                                             ActionType=='Hide'~-1))
+df$envIndex <- ordered(factor(df$envIndex, levels=c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26)))
+df$noOfCones <- ordered(factor(df$noOfCones, levels=c(1,2,3,4)))
+df$predatorSpeed <- ordered(factor(df$predatorSpeed, levels=c(20, 15, 10)))
+df$ParticipantID <- as.character(df$ParticipantID)
+
+############ Load dataframe logging forages by their proximity to a check
+df_forageSeq <- read.csv(file=paste0(data_root,'forageSeqRTs_21Mar2023_OverallOutlierOmit_withDisabled_minMaxTrans0-600.csv'))
+df_forageSeq <- df_forageSeq[df_forageSeq$RT>0,] # omit any rare errors
+df_forageSeq <- subset(df_forageSeq, select = -c(X, NCheckBeforeForage,noOfCones,tpEpoch,predatorTotal_currEnv, firstActionPostDisc))
+df_forageSeq$NForageBeforeCheck <- as.numeric(df_forageSeq$NForageBeforeCheck)
+df_forageSeq$envIndex <- ordered(factor(df_forageSeq$envIndex, levels=c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26)))
+df_forageSeq$ParticipantID <- as.character(df_forageSeq$ParticipantID)
+df_forageSeq <- df_forageSeq %>% mutate(proxToCheck = case_when(NForageBeforeCheck==1~6,
+                                             NForageBeforeCheck==2~5,
+                                             NForageBeforeCheck==3~4,
+                                             NForageBeforeCheck==4~3,
+                                             NForageBeforeCheck==5~2,
+                                             NForageBeforeCheck==6~1))
+
+############ Load dataframe logging checks by their proximity to a forage
+df_checkSeq <- read.csv(file=paste0(data_root,'checkSeqRTs_21Mar2023_OverallOutlierOmit_withDisabled_minMaxTrans0-600.csv'))
+df_checkSeq <- df_checkSeq[df_checkSeq$RT>0,] # omit any rare errors
+df_checkSeq <- subset(df_checkSeq, select = -c(X, NForageBeforeCheck,noOfCones,tpEpoch,predatorTotal_currEnv, firstActionPostDisc))
+df_checkSeq$NCheckBeforeForage <- as.numeric(df_checkSeq$NCheckBeforeForage)
+df_checkSeq$envIndex <- ordered(factor(df_checkSeq$envIndex, levels=c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26)))
+df_checkSeq$ParticipantID <- as.character(df_checkSeq$ParticipantID)
+df_checkSeq <- df_checkSeq %>% mutate(proxToForage = case_when(NCheckBeforeForage==1~3,
+                                             NCheckBeforeForage==2~2,
+                                             NCheckBeforeForage==3~1))
+# Set priors
+my.priors = set_prior('normal(0,3)',class='b')
+```
+
+RT modelling (Runtime can be several hours)
+```{r}
+tic('RT modelling')
+model1_results <- data.frame(ID=character(),Intercept=numeric(),isTransition=numeric(),
+                             checkNotForage = numeric(),TransitionXCheck=numeric(),
+                             timePressure=numeric(),reward=numeric(),timeInCurrEnv=numeric(),
+                             envIndex=numeric(),fitted_ok=logical())
+model4_results <- data.frame(ID=character(),Intercept=numeric(),timePressure=numeric(),reward=numeric(),
+                             timeInCurrEnv=numeric(), proxToCheck=numeric(),envIndex=numeric(),fitted_ok=logical())
+model5_results <- data.frame(ID=character(),Intercept=numeric(),
+                             firstActionPostDisc=numeric(),
+                             reward=numeric(),envIndex=numeric(),
+                             timeInCurrEnv=numeric(),preDiscPhase=numeric(),fitted_ok=logical())
+
+to_run <- c(1,4,5)
+for (ppt in ppt_to_include) {
+  print(paste0("Current participant: ", ppt))
+  pptdata = df[df$ParticipantID==ppt,]
+  
+  # Standardize vars within-phase (pre- vs. post-disc.)
+  pptdata[pptdata$Phase=='Pre',"isTransition"] <- scale(pptdata[pptdata$Phase=='Pre',"isTransition"])
+  pptdata[pptdata$Phase=='Post',"isTransition"] <- scale(pptdata[pptdata$Phase=='Post',"isTransition"])
+  pptdata[pptdata$Phase=='Pre',"checkNotForage"] <- scale(pptdata[pptdata$Phase=='Pre',"checkNotForage"])
+  pptdata[pptdata$Phase=='Post',"checkNotForage"] <- scale(pptdata[pptdata$Phase=='Post',"checkNotForage"])
+  pptdata$TransitionXCheck <- NA
+  pptdata[pptdata$Phase=='Pre',"TransitionXCheck"] <- scale(pptdata[pptdata$Phase=='Pre',"isTransition"]*pptdata[pptdata$Phase=='Pre',"checkNotForage"])
+  pptdata[pptdata$Phase=='Post',"TransitionXCheck"] <- scale(pptdata[pptdata$Phase=='Post',"isTransition"]*pptdata[pptdata$Phase=='Post',"checkNotForage"])
+  pptdata[pptdata$Phase=='Pre',"timePressure"] <- scale(pptdata[pptdata$Phase=='Pre',"timePressure"])
+  pptdata[pptdata$Phase=='Post',"timePressure"] <- scale(pptdata[pptdata$Phase=='Post',"timePressure"])
+
+  # Standardize vars across both phases
+  pptdata$firstActionPostDisc <- scale(pptdata$firstActionPostDisc)
+  pptdata$preDiscPhase <- scale(pptdata$preDiscPhase)
+  pptdata$timeInCurrEnv <- scale(pptdata$timeInCurrEnv)
+  pptdata$rewAvail_currTP <- scale(pptdata$rewAvail_currTP)
+  
+  # Foraging sequence variables
+  pptdata_forageSeq = df_forageSeq[df_forageSeq$ParticipantID==ppt,]
+  pptdata_forageSeq$timeInCurrEnv <- scale(pptdata_forageSeq$timeInCurrEnv)
+  pptdata_forageSeq$timePressure <- scale(pptdata_forageSeq$timePressure)
+  pptdata_forageSeq$rewAvail_currTP <- scale(pptdata_forageSeq$rewAvail_currTP)
+  
+  pptdata_forageSeq[pptdata_forageSeq$Phase=='Pre',"proxToCheck"] <- scale(pptdata_forageSeq[pptdata_forageSeq$Phase=='Pre',"proxToCheck"])
+  pptdata_forageSeq[pptdata_forageSeq$Phase=='Post',"proxToCheck"] <- scale(pptdata_forageSeq[pptdata_forageSeq$Phase=='Post',"proxToCheck"])
+  
+  # Checking sequence variables
+  pptdata_checkSeq = df_checkSeq[df_checkSeq$ParticipantID==ppt,]
+  pptdata_checkSeq$timeInCurrEnv <- scale(pptdata_checkSeq$timeInCurrEnv)
+  pptdata_checkSeq$timePressure <- scale(pptdata_checkSeq$timePressure)
+  pptdata_checkSeq$rewAvail_currTP <- scale(pptdata_checkSeq$rewAvail_currTP)
+  
+  if (length(unique(pptdata_checkSeq$proxToForage)) > 1) {
+      pptdata_checkSeq[pptdata_checkSeq$Phase=='Pre',"proxToForage"] <- scale(pptdata_checkSeq[pptdata_checkSeq$Phase=='Pre',"proxToForage"])
+  }
+
+  ############################## Model 1: Effects of transition and action type on IRTs
+  if (1 %in% to_run) {
+    predisc_df = pptdata[pptdata$Phase=='Pre',c('Phase','isTransition','checkNotForage','RT','envIndex','timeInCurrEnv','rewAvail_currTP','timePressure','TransitionXCheck')]
+
+    # Family choice: https://cran.r-project.org/web/packages/brms/vignettes/brms_families.html
+    my.model1 = brm(RT ~ 1 + isTransition + checkNotForage + TransitionXCheck + timePressure + rewAvail_currTP + timeInCurrEnv + mo(envIndex),
+                    prior=my.priors,
+                    data=predisc_df, 
+                    iter=1,
+                    family=shifted_lognormal())
+    outT1 = fit_behaviour(predisc_df,my.model1)
+
+    # Add to master dataframe
+    model1_results <- model1_results %>% add_row(
+                       ID = ppt, 
+                       Intercept = outT1$pars$Intercept,
+                       isTransition = outT1$pars$isTransition,
+                       checkNotForage = outT1$pars$checkNotForage,
+                       TransitionXCheck = outT1$pars$TransitionXCheck,
+                       timeInCurrEnv = outT1$pars$timeInCurrEnv,
+                       envIndex = outT1$pars$moenvIndex,
+                       timePressure = outT1$pars$timePressure,
+                       reward = outT1$pars$rewAvail_currTP,
+                       fitted_ok = outT1$pars$fitted.ok.flag)
+    rm(my.model1, outT1, predisc_df,emmdf)
+  }
+  ############################## Model 4: Effect of approaching check switch on IRTs
+  if (4 %in% to_run) {
+    temp_df = pptdata_forageSeq[pptdata_forageSeq$Phase=='Pre',c('Phase','RT','envIndex','timeInCurrEnv',
+                          'rewAvail_currTP','timePressure','proxToCheck')]
+
+    # Run model and save output
+    my.model4 = brm(RT ~ 1+proxToCheck+rewAvail_currTP+timePressure+mo(envIndex)+timeInCurrEnv,prior=my.priors, data=temp_df, iter=1,family=shifted_lognormal)
+    outT4 = fit_behaviour(temp_df,my.model4)
+
+    model4_results <- model4_results %>% add_row(
+               ID = ppt,
+               Intercept = outT4$pars$Intercept,
+               proxToCheck = outT4$pars$proxToCheck,
+               reward = outT4$pars$rewAvail_currTP,
+               timePressure = outT4$pars$timePressure,
+               timeInCurrEnv = outT4$pars$timeInCurrEnv,
+               envIndex = outT4$pars$moenvIndex,
+               fitted_ok = outT4$pars$fitted.ok.flag)
+    rm(my.model4, outT4, temp_df)
+  }
+  ############################## Model 5: Effect of predator discovery on IRTs
+  if (5 %in% to_run) {
+    temp_df = pptdata[,c('Phase','firstActionPostDisc','RT','timeInCurrEnv','rewAvail_currTP','envIndex','preDiscPhase')]
+
+    my.model5 = brm(RT ~ 1 + firstActionPostDisc + rewAvail_currTP + timeInCurrEnv + mo(envIndex) + preDiscPhase,
+                    prior=my.priors, 
+                    data=temp_df, 
+                    iter=1,
+                    family=shifted_lognormal())
+    outT5 = fit_behaviour(temp_df,my.model5)
+    
+    # Add to master dataframe
+    model5_results <- model5_results %>% add_row(
+                       ID = ppt, 
+                       Intercept = outT5$pars$Intercept,
+                       firstActionPostDisc = outT5$pars$firstActionPostDisc,
+                       timeInCurrEnv = outT5$pars$timeInCurrEnv,
+                       preDiscPhase = outT5$pars$preDiscPhase,
+                       envIndex = outT5$pars$moenvIndex,
+                       reward = outT5$pars$rewAvail_currTP,
+                       fitted_ok = outT5$pars$fitted.ok.flag)
+    rm(my.model5, outT5, temp_df)
+  }
+}
+# Save all participant data
+#if (1 %in% to_run) {
+#write.csv(model1_results,paste0(results_root,'RT_model1_results_21Mar2023_ContextualEffects_reproduced.csv", row.names = FALSE)}
+
+#if (4 %in% to_run) {
+#write.csv(model4_results,paste0(results_root,"RT_model4_results_21Mar2023_ApproachingCheckSwitch_reproduced.csv"), row.names = FALSE)}
+
+#if (5 %in% to_run) {
+#write.csv(model5_results,paste0(results_root,'RT_model5_results_22Mar2023_PredatorDiscovery_reproduced.csv"), row.names = FALSE)}
+toc()
+```
+
+Run t-tests: Read in saved modelling results.
+```{r}
+model1_results <- read.csv(file=paste0(results_root,'RT_model1_results_21Mar2023_ContextualEffects.csv'))
+model4_results <- read.csv(file=paste0(results_root,'RT_model4_results_21Mar2023_ApproachingCheckSwitch.csv'))
+model5_results <- read.csv(file=paste0(results_root,"RT_model5_results_22Mar2023_PredatorDiscovery.csv"))
+```
+
+Plot params
+```{r}
+fontsize = 22
+offs = 0.05
+xlims <-  c(-0.5,0.5)
+```
+
+Model 1: T-tests and plot
+```{r}
+ttests <- run_ttests(df=model1_results,param_names=colnames(model1_results)[c(3:9)])
+# formula <- 'RT (preDisc) ~ 1 + isTransition + checkNotForage + TransitionXCheck + timePressure + rewAvail_currTP + timeInCurrEnv + mo(envIndex)'
+# ttests$formula <- formula
+# write.csv(ttests,paste0(results_root,"RT_model1_ttests_21Mar2023_ContextualEffects_reproduced.csv"), row.names = FALSE)
+# rm(formula)
+points <- melt(model1_results[1:9], id.vars=1:2)
+ttests$Parameter <- factor(ttests$Parameter,levels=c("envIndex","timeInCurrEnv","timePressure","reward","TransitionXCheck","checkNotForage","isTransition"))
+
+p <- ggplot(ttests, aes(mean, Parameter)) + theme_classic() + xlim(xlims[1],xlims[2]) +
+  geom_point() + geom_errorbarh(aes(xmin=CI_lower, xmax=CI_upper)) + # , ymin=mean, ymax=mean
+  geom_vline(aes(xintercept = 0), linetype = "dashed",colour = 'blue') + #xintercept=0,linetype=3,
+  theme(axis.text = element_text(size = fontsize), axis.title=element_text(size=fontsize,face="bold"), plot.title = element_text(size=fontsize)) +
+  xlab("") + #ylab("Action Transition") +
+  scale_y_discrete(labels=c("isTransition"="Behavioral switch", "precededByForage"="Preceded by forage","moenvIndex"="Block","timeInCurrEnv"="Time elapsed","timePressure"="Time pressure","reward"="Reward","transitionToCheck"="Switch to check","transitionToForage"="Switch to forage","envIndex"="Block","checkNotForage"="Check","TransitionXCheck"="Switch*Check","TransitionTypeForageMtoMforage"="Forage->forage (ref. C->C)","TransitionTypeForageMtoMcheck"="Forage->check (ref. C->C)","TransitionTypeCheckMtoMforage"="Check->forage (ref. C->C)")) +
+  ggtitle("Effects of transition and \naction type on IRTs")+
+  theme(plot.title = element_text(hjust = 0.5))
+tosave <- p+
+annotate("text", x=ttests$CI_upper[1]+offs, y=ttests$Parameter[1], label=ttests$sig[1],size=7,angle=90) + 
+  annotate("text", x=ttests$CI_upper[2]+offs, y=ttests$Parameter[2], label=ttests$sig[2],size=7,angle=90) +
+annotate("text", x=ttests$CI_upper[3]+offs, y=ttests$Parameter[3], label=ttests$sig[3],size=7,angle=90) +
+annotate("text", x=ttests$CI_upper[4]+offs, y=ttests$Parameter[4], label=ttests$sig[4],size=7,angle=90) +
+annotate("text", x=ttests$CI_upper[5]+offs, y=ttests$Parameter[5], label=ttests$sig[5],size=7,angle=90) +
+annotate("text", x=ttests$CI_upper[6]+offs, y=ttests$Parameter[6], label=ttests$sig[6],size=7,angle=90) +
+annotate("text", x=ttests$CI_upper[7]+offs, y=ttests$Parameter[7], label=ttests$sig[7],size=7,angle=90)+
+    geom_jitter(data=points, aes(value, variable), color='#7A7777',shape=21)
+tosave
+# ggsave(tosave, file=paste0(results_root,"Contextual_effects_on_IRTs.eps"), device="eps",width=8,height=4)
+```
+
+Model 1: Visualize Transition RTs
+```{r}
+fontsize=35
+df2 = read.csv(file=paste0(data_root,"RTs_22Mar2023_OverallOutlierOmit_withDisabled_minMaxTrans0-1.csv"))
+pptmeans <- df2[df2$Phase=='Pre',] %>% group_by(TransitionType, ParticipantID) %>%
+       summarise(pptmean=mean(RT))
+#pptmeans$TransitionType <- droplevels(pptmeans$TransitionType)
+plotdf <- pptmeans %>% group_by(TransitionType) %>% summarise(mean=mean(pptmean), se=std.error(pptmean))
+# rm(pptmeans)
+
+plotdf$TransitionType <- factor(plotdf$TransitionType,levels=c("Forage-to-forage","Check-to-check","Forage-to-check","Check-to-forage"))
+
+p<-ggplot(plotdf, aes(x=TransitionType, y=mean)) + theme_classic() +
+  geom_point()+
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), width=.2,
+  position=position_dodge(0.05)) +
+  theme(axis.text = element_text(size = fontsize), axis.title=element_text(size=fontsize,face="bold"), plot.title = element_text(size=fontsize),axis.text.x = element_text(angle = 45,hjust=1)) + 
+  xlab("")+ylab("IRT")+
+  ggtitle("")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  scale_x_discrete(labels=c("Check-to-check"="Ch->Ch", 
+                            "Check-to-forage"="Ch->Fo",
+                            "Forage-to-check"="Fo->Ch",
+                            "Forage-to-forage"="Fo->Fo"))+
+    geom_jitter(data=pptmeans, aes(x=TransitionType, y=pptmean), color='#7A7777',shape=21)
+p
+#ggsave(p, file=paste0(results_root,"Contextual_effects_on_IRTs_interactionEffect.eps"), device="eps",width=8,height=6)
+```
+
+Model 4: T-tests and plot
+```{r}
+fontsize = 22
+ttests <- run_ttests(df=model4_results,param_names=colnames(model4_results)[3:7])
+# formula <- 'RT (pre-disc.) ~ 1+proxToCheck+rewAvail_currTP+timePressure+mo(envIndex)+timeInCurrEnv'
+# ttests$formula <- formula
+# write.csv(ttests,paste0(results_root,"RT_model4_ttests_21Mar2023_ApproachingCheckSwitch_reproduced.csv"), row.names = FALSE)
+# rm(formula)
+points <- melt(model4_results[1:7], id.vars=1:2)
+
+ttests$Parameter <- factor(ttests$Parameter,levels=c("envIndex","timeInCurrEnv","timePressure","reward","proxToCheck"))
+
+# ttests$Parameter <- factor(ttests$Parameter,levels=rev(unique(ttests$Parameter)))
+p <- ggplot(ttests, aes(mean, Parameter))+ theme_classic() + 
+  geom_point() + geom_errorbarh(aes(xmin=CI_lower, xmax=CI_upper)) + xlim(xlims[1],xlims[2]) +
+  geom_vline(aes(xintercept = 0), linetype = "dashed",colour = 'blue') + 
+  theme(axis.text = element_text(size = fontsize), axis.title=element_text(size=fontsize,face="bold"), plot.title = element_text(size=fontsize)) + 
+  xlab("") + ylab("") + 
+  scale_y_discrete(labels=c("ForageToCheck"="Check", "F2F_CheckMin1"="Forage (check-1)","F2F_CheckMin2"="Forage (check-2)","F2F_CheckMin3"="Forage (check-3)","envIndex"="Block","timeInCurrEnv"="Time elapsed","preDiscPhase"="Pre-disc. phase","timePressure"="Time pressure","speed_recode"="Predator speed","reward"="Reward","F2F_CheckMin1XSpeed"="Forage (check-1)*Speed","F2F_CheckMin2XSpeed"="Forage (check-2)*Speed","F2F_CheckMin3XSpeed"="Forage (check-3)*Speed","proxToCheck"="Prox. to check switch","proxToCheckXPressure"="Proximity*Time pressure")) + 
+  ggtitle("Effect of approaching \ncheck switch on IRTs")+
+  theme(plot.title = element_text(hjust = 0.5))
+tosave <- p+
+annotate("text", x=ttests$CI_upper[1]+offs, y=ttests$Parameter[1], label=ttests$sig[1],size=7,angle=90) + 
+  annotate("text", x=ttests$CI_upper[2]+offs, y=ttests$Parameter[2], label=ttests$sig[2],size=7,angle=90) +
+annotate("text", x=ttests$CI_upper[3]+offs, y=ttests$Parameter[3], label=ttests$sig[3],size=7,angle=90)+
+annotate("text", x=ttests$CI_upper[4]+offs, y=ttests$Parameter[4], label=ttests$sig[4],size=7,angle=90) +
+annotate("text", x=ttests$CI_upper[5]+offs, y=ttests$Parameter[5], label=ttests$sig[5],size=7,angle=90)+
+    geom_jitter(data=points, aes(value, variable), color='#7A7777',shape=21)
+tosave
+#ggsave(tosave, file=paste0(results_root,"Approaching_check_switch_effect_on_IRTs.eps"), device="eps",width=8,height=4)
+```
+
+Model 5: T-tests and plot
+```{r}
+ttests <- run_ttests(df=model5_results,param_names=colnames(model5_results)[3:7])
+# formula <- 'RT (pre+post-disc.) ~ 1 + firstActionPostDisc + rewAvail_currTP + timeInCurrEnv + mo(envIndex) + preDiscPhase'
+# ttests$formula <- formula
+# write.csv(ttests,paste0(results_root,"RT_model5_ttests_22Mar2023_predatorDiscovery_reproduced.csv"), row.names = FALSE)
+# rm(formula)
+points <- melt(model5_results[1:7], id.vars=1:2)
+
+ttests$Parameter <- factor(ttests$Parameter,levels=c("envIndex","timeInCurrEnv","reward","preDiscPhase","firstActionPostDisc"))
+p <- ggplot(ttests, aes(mean, Parameter))+ theme_classic()+ 
+  geom_point() + geom_errorbarh(aes(xmin=CI_lower, xmax=CI_upper)) + xlim(xlims[1],xlims[2]) +
+  geom_vline(aes(xintercept = 0), linetype = "dashed",colour = 'blue') + 
+  theme(axis.text = element_text(size = fontsize), axis.title=element_text(size=fontsize,face="bold"), plot.title = element_text(size=fontsize)) + 
+  xlab("") +# ylab("Action in sequence") + 
+  scale_y_discrete(labels=c("isTransition"="Behavioral transition", "precededByForage"="Preceded by forage","envIndex"="Block","timeInCurrEnv"="Time elapsed","reward"="Reward","firstActionPostDisc"="Post-predator disc.","transitionToCheck"="Switch to check","transitionToForage"="Switch to forage","timePressure"="Threat level","checkNotForage"="Check","TransitionXCheck"="Switch*Check","preDiscPhase"="Pre-PD phase","firstActionPostDiscXSpeed"="Post-PD phase*Speed","predatorSpeed"="Predator speed","firstActionPostDiscXPressure"="Post-disc.*Time pressure")) + 
+  ggtitle("Effect of predator discovery \non IRTs")+
+  theme(plot.title = element_text(hjust = 0.5))
+tosave <- p+
+annotate("text", x=ttests$CI_upper[1]+offs, y=ttests$Parameter[1], label=ttests$sig[1],size=7,angle=90) + 
+  annotate("text", x=ttests$CI_upper[2]+offs, y=ttests$Parameter[2], label=ttests$sig[2],size=7,angle=90) +
+annotate("text", x=ttests$CI_upper[3]+offs, y=ttests$Parameter[3], label=ttests$sig[3],size=7,angle=90) +
+annotate("text", x=ttests$CI_upper[4]+offs, y=ttests$Parameter[4], label=ttests$sig[4],size=7,angle=90) +
+annotate("text", x=ttests$CI_upper[5]+offs, y=ttests$Parameter[5], label=ttests$sig[5],size=7,angle=90)+
+    geom_jitter(data=points, aes(value, variable), color='#7A7777',shape=21)
+tosave
+ggsave(tosave, file=paste0(results_root,"Predator_discovery_effect_on_IRTs.eps"), device="eps",width=8,height=4)
+```
+
+
+
+
+
+
+
+

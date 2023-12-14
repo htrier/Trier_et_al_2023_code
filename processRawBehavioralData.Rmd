@@ -1,0 +1,374 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Load packages and behavioral data
+```{r}
+library(rjson)
+library(data.table)
+library(dplyr)
+library(tibble)
+library(tictoc)
+options(scipen=999)
+options(warn=2)
+
+tic('File prep')
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+root = '/Users/haileytrier/Downloads/Trier_et_al_2023_code/data'
+
+# Get experimental data
+ppt_to_include <- c('sub103','sub105','sub109','sub111','sub117','sub119','sub121','sub123','sub125','sub127','sub129','sub131','sub204','sub208','sub212','sub214','sub216','sub218','sub222','sub224','sub228','sub230','sub232')
+
+filenames <- Sys.glob(file.path(root,"*.json"))
+toc()
+```
+
+# CREATE BEHAVIORAL MEASURES
+Pre-discovery phase
+```{r}
+tic('Computing pre-PD behavioral measures')
+for (idx in 1:length(ppt_to_include)) {
+  pptID <- ppt_to_include[idx]
+  print(paste0("subject=",pptID))
+  cdat <- tryCatch({fromJSON(file=filenames[idx])},
+                   error=function(error_message) { 
+                     message(paste("Warning: File ", filenames[idx], " has no data to parse", sep=''))
+                     cdat <- NA})
+
+  ####################################################################
+  ##### FIRST EXTRACT BEHAVIORAL DATA FROM JSON FILE
+  ####################################################################
+  for (ix in 1:length(cdat$storeBehav)) {
+    if ("experimentBehavior" %in% names(cdat$storeBehav[[ix]])) {indExp <- ix} #get index of which section has the experimental data
+  }
+  bx_list <- cdat$storeBehav[[indExp]]$experimentBehavior$buttons
+  
+  temp <- data.frame() # Aggregate list into temporary data frame with all of this participant's behaviour
+  for (li in 1:length(bx_list)) { #extract all button presses
+    list_item <- data.frame(matrix(unlist(bx_list[[li]]), nrow=1, byrow=T),stringsAsFactors=FALSE)
+    list_names <- names(bx_list[[li]]) #save separately in case some are missing and we need to add
+    if (any(sapply(bx_list[[li]], is.null)) || !all(names(temp) %in% names(bx_list[[li]]))) { #is anything missing or empty?
+      # check for any null items
+      if (any(sapply(bx_list[[li]], is.null))) {
+        nullName <- names(c(sapply(bx_list[[li]], is.null))[sapply(bx_list[[li]], is.null)])
+        nullIndex <- which(c(names(bx_list[[li]]))==nullName) #which field is missing?
+        list_item <- tibble::add_column(.data=list_item, NA, .after=nullIndex-1) # add the missing item in the appropriate index 
+        colnames(list_item) <- c(names(bx_list[[li]]))#rename columns without the missing field
+      } 
+      
+      # check for any missing list items
+      if (!all(names(temp) %in% names(bx_list[[li]]))) {
+        missingField <- which(!(names(temp) %in% names(bx_list[[li]])))
+        for (fl in 1:length(missingField)) {
+          list_item <- tibble::add_column(.data = list_item, NA, .after = missingField[fl]-1)
+          names(list_item)[names(list_item)=='NA'] <- paste("added_col",fl,sep='') #rename so we can reiterate
+          list_names <- c(list_names[1:missingField[fl]-1], names(temp)[missingField[fl]], list_names[missingField[fl]:length(list_names)])
+        }
+      }
+    } 
+    colnames(list_item) <- list_names #rename columns
+    temp <- rbind(temp, list_item) # add button press to master matrix
+  }
+  # All columns are auto set to character type; reformat some to numeric type
+  numCols <- c("buttonID","rawtimeStamp","timeInCurrEnv","tpEpoch","envStartTime","epochStartTime","envIndex","noOfCones","rewAvail_currTP","rewardGained","totalInProgressBar","lifeCounter","predatorLocation","predatorProxPerc","predatorProxX","predatorProxY","predatorDelay","predatorSpeed","predatorIndex_currEnv","predatorTotal_currEnv","timesCaught_currEnv","timeSinceLastForage","timeSinceLastReturnFromHiding","timeSinceLastCheck_cone3","timeSinceLastCheck_cone4","timeSinceLastCheck_cone5","timeSinceLastCheck_cone6","timeSinceLastCheck_cone7","timeSinceLastCheck_cone8","timeSincelastButtonPress")
+  temp[,numCols] <- lapply(temp[,numCols], function(x) as.numeric(as.character(x)))
+  temp$predatorSeen <- ifelse(temp$predatorSeen==TRUE, 1, 0)
+  
+  # Log time stamp relative to first pulse and then remove pulses
+  firstpulsets = cdat$exptDate$startDate # time stamp of 10th pulse that triggered task start (in ms)
+  temp$msec_since_tenth_pulse = (temp$rawtimeStamp-firstpulsets)
+  TR = 1962 # length of TR in ms
+  temp$sec_since_first_pulse_corrected = (temp$msec_since_tenth_pulse+(9*TR))/1000
+  temp <- temp[-c(which(temp$buttonName=='pulse')),] # now omit pulses from data set
+
+  ####################################################################
+  ##################### MAKE EXTRA VARIABLES
+  ####################################################################
+  # Remove disabled button presses
+  #idx_disabled <- which(temp$disabled == TRUE & (temp$buttonName != "stopHiding"))#'stop hiding' button presses always occur while disabled
+  # if (length(idx_disabled)!=0) {
+    # disabled_buttons <- temp[c(idx_disabled),] # Keep track of these in case we want them later
+    # temp <- temp[-c(idx_disabled),] # Remove for now
+    # }
+  
+  # Set zeroes to NANs in rewardGained (maybe unnecessary)
+  idx_rg <- which(temp$rewardGained == 0)
+  if (length(idx_rg) != 0) {temp$rewardGained[idx_rg] = NA}
+  setattr(temp, "row.names", c(1:nrow(temp))) # reset row names so it will index correctly
+  
+  temp[c("afterEpoch","failedAttempts","discovery","firstCheck_corrected","lastCheck_corrected")] <- 0 # "lastChecks", "noSearchEpoch"
+  temp[c("pPredator","timePressure","recheck_finishSeq")] <- NA #N.B. I chose to reset 'recheck' variable at the end of a checking sequence instead of making it a simple action-repeat variable because model comparison suggested it yielded a much lower negative log likelihood (hence why the variable here is called 'recheck_finishSeq')
+
+  # totalNoSearchEpochs <- 0 # iterator that counts up how many epochs have no searches for this participant
+    
+  for (ei in unique(temp$envIndex)) { # separate this participant's environments
+    subset <- temp[which(temp$envIndex == ei),]
+    
+    # Look for errors in data logging
+    if (length(unique(subset$predatorSpeed)) > 1) {
+      subset <- subset[which(subset$predatorSpeed == Mode(subset$predatorSpeed)),]
+      temp <- temp[-c(which(temp$envIndex==ei & (temp$predatorSpeed!=Mode(subset$predatorSpeed)))),]
+    }
+
+    # Warning if participant started over an epoch. For fMRI we retain this data
+    if (is.unsorted(subset$predatorTotal_currEnv,na.rm=TRUE)){
+      print(paste0("WARNING: participant appears to have started over in epoch ",pt,", envIndex ", ei, ", subject ",pptID))
+    }
+
+    for (pt in as.numeric(unique(subset$predatorTotal_currEnv))) { # separate predator epochs
+      epch <- subset[which(subset$predatorTotal_currEnv == pt),]
+      epochDelay <- as.numeric(na.omit(unique(epch$predatorDelay)))
+      epochSpeed <- as.numeric(na.omit(unique(epch$predatorSpeed)))
+      
+      # Warning if any epoch was restarted (shouldn't happen with fMRI behavior)
+      if (is.unsorted(epch$tpEpoch,na.rm=TRUE)) {
+        print(paste0("WARNING: participant appears to have started over in epoch ",pt,", envIndex ", ei, ", subject ",pptID))
+      }
+
+      if (nrow(epch) > 0 & (length(unique(na.omit(epch$predatorIndex_currEnv)))!=0)) {
+        # Note whether any actions occurred after the delay+speed window
+        epch$afterEpoch[which(epch$tpEpoch>(1000*(epochDelay+epochSpeed)))] <- 1
+        
+        # For pre-discovery phase analysis: Note discovery action
+        fullepoch <- epch # Cache full epoch data
+        if (length(which(epch$predatorSeen==1))!=0) {
+          epch$discovery[min(which(epch$predatorSeen==1))] <- 1
+          epch <- epch[c(1:min(which(epch$predatorSeen==1))),] # Constrain to pre-disc. phase, including discovery action
+        }
+        
+        # Calculate pPredator and timePressure for each button press in this epoch
+        maxDelay <- 10500
+        minDelay <- 2500
+        recheck_finishSeq <- 0  # iterator for keeping track of checking clusters
+        clusterChecks <- vector()
+        slope <- 1/((minDelay/1000)+epochSpeed)  # based on expectation of earliest time point predator could arrive
+        tpLastCheckStart <- 0 # record the time point of start of most recent check sequence in this epoch
+
+        for (bp in 1:nrow(epch)) {
+          epch$timePressure[bp] <- (slope*(epch$tpEpoch[bp] - tpLastCheckStart))/1000
+          epch$pPredator[bp] <- ifelse(epch$tpEpoch[bp]<=maxDelay, epch$tpEpoch[bp]/maxDelay, 1)
+          epch$recheck_finishSeq[bp] <- recheck_finishSeq
+
+          ### ACTION IS CHECK
+          if (epch$buttonID[bp] > 2) { #if it is a check action
+            if (epch$noOfCones[1]!=1) { #if we are in a block with >1 directions for checking
+              clusterChecks <- c(clusterChecks, epch$buttonID[bp]) #add to our list of checks made in this cluster
+              if (!all(c(3:(epch$noOfCones[1]+2)) %in% clusterChecks)) { #if cluster NOT finished
+                if (length(clusterChecks)==1) {epch$firstCheck_corrected[bp] <- 1} #Note if this is the first in the cluster
+                recheck_finishSeq <- 1
+              } else if (all(c(3:(epch$noOfCones[1]+2)) %in% clusterChecks)) { # else if the cluster IS complete now
+                recheck_finishSeq <- 0
+                clusterChecks <- vector() #reset counting checks in this cluster
+                tpLastCheckStart <- epch$tpEpoch[max(which(epch$firstCheck_corrected==1 & (epch$tpEpoch<epch$tpEpoch[bp])))] # Note start of concluded check cluster
+                epch$lastCheck_corrected[bp] <- 1
+              }
+            } else { #if we are in a one-direction visibility environment
+              recheck_finishSeq <- 0
+              tpLastCheckStart <- epch$tpEpoch[bp] # note the start of the sequence of checks that just concluded
+            }
+          ### ACTION IS FORAGE
+          } else if (epch$buttonID[bp] == 1) {
+          ### ACTION IS HIDE/RETURN
+          } else if (epch$buttonID[bp] == 2) { 
+            recheck_finishSeq <- 0
+          }
+      }
+
+      # Log in main dataframe
+      #if we have constrained the epoch, make sure we replace the correct number of rows back into the original matrix
+      if (nrow(fullepoch) != nrow(epch)) {
+        fullepoch[c(1:min(which(fullepoch$predatorSeen==1))),] <- epch
+      } else {fullepoch <- epch}
+        logRows <- which(temp$predatorTotal_currEnv == pt & (temp$envIndex == ei) & (temp$failedAttempts==0))
+        logCols <- c("tpEpoch","pPredator","afterEpoch","timePressure","discovery","failedAttempts","recheck_finishSeq","firstCheck_corrected","lastCheck_corrected")
+        temp[logRows, logCols] <- fullepoch[,logCols]
+      } # end of conditional checking whether there are rows left in the epoch
+    } # end iterating through predator epochs
+  } # end iterating through environment blocks
+  
+  # Adjustments across entire matrix
+  names(temp)[names(temp) == 'recheck_finishSeq'] <- 'recheck'
+  temp <- temp[which(temp$buttonName != "stopHiding" & (temp$buttonName != "hide") & (temp$afterEpoch==0) &  (temp$failedAttempts==0)),]
+  temp <- temp[which(temp$predatorSeen==0 | (temp$discovery==1)),]
+
+  temp <- mutate(temp,
+                 ParticipantIDs = pptID,
+                 checkAction = ifelse(buttonID>2, TRUE, FALSE),
+                 schedID=cdat$schedID)
+  setattr(temp, "row.names", c(1:nrow(temp))) # Reset row names after row exclusion
+
+  # Save unstandardized data frame
+  write.csv(temp,paste0(root,"/",pptID,"_preproExpBehav_prePD_unstandardized_withDisabled.csv"), row.names = FALSE)
+}
+toc()
+```
+
+Post-discovery phase
+```{r}
+### A note on timing for the post-discovery phase: intraepoch time points are calculated such that "0" is the time at which the predator was seen (e.g., the time stamp of the first action in the threat monitoring period has subtracted from it the time stamp of the action where the predator was discovered). This means the "maximum time spent in epoch" is the time stamp of the last action (typically 'hide') occurring in that epoch MINUS the time stamp of the action where the predator was discovered.
+
+tic('Computing post-PD behavioral measures')
+
+### Put all data into one data frame
+for (idx in 1:length(ppt_to_include)){ # idx = ppt_to_include[1]
+  pptID <- ppt_to_include[idx]
+  print(paste0("idx=",pptID))
+  cdat <- tryCatch({fromJSON(file=filenames[idx])},
+                   error=function(error_message) { 
+                     message(paste("Warning: File ", filenames[idx], " has no data to parse", sep=''))
+                     cdat <- NA})
+
+  ####################################################################
+  ##### FIRST EXTRACT BEHAVIORAL DATA FROM EXPERIMENTAL SECTION
+  ####################################################################
+  for (ix in 1:length(cdat$storeBehav)) {
+    if ("experimentBehavior" %in% names(cdat$storeBehav[[ix]])) {indExp <- ix} #get index of which section has the experimental data
+  }
+  bx_list <- cdat$storeBehav[[indExp]]$experimentBehavior$buttons
+  
+  temp <- data.frame() # Aggregate list into temporary data frame with all of this participant's behaviour
+  for (li in 1:length(bx_list)) { #extract all button presses
+    list_item <- data.frame(matrix(unlist(bx_list[[li]]), nrow=1, byrow=T),stringsAsFactors=FALSE)
+    list_names <- names(bx_list[[li]]) #save separately in case some are missing and we need to add
+    if (any(sapply(bx_list[[li]], is.null)) || !all(names(temp) %in% names(bx_list[[li]]))) { #is anything missing or empty?
+      if (any(sapply(bx_list[[li]], is.null))) { # check for any null items
+        nullName <- names(c(sapply(bx_list[[li]], is.null))[sapply(bx_list[[li]], is.null)])
+        nullIndex <- which(c(names(bx_list[[li]]))==nullName) #which field is missing?
+        list_item <- tibble::add_column(.data=list_item, NA, .after=nullIndex-1) # add the missing item in the appropriate index 
+        colnames(list_item) <- c(names(bx_list[[li]])) #rename columns without the missing field
+      } 
+      
+      # check for any missing list items
+      if (!all(names(temp) %in% names(bx_list[[li]]))) {
+        missingField <- which(!(names(temp) %in% names(bx_list[[li]])))
+        for (fl in 1:length(missingField)) {
+          list_item <- tibble::add_column(.data = list_item, NA, .after = missingField[fl]-1)
+          names(list_item)[names(list_item)=='NA'] <- paste("added_col",fl,sep='') #rename so we can reiterate
+          list_names <- c(list_names[1:missingField[fl]-1], names(temp)[missingField[fl]], list_names[missingField[fl]:length(list_names)])
+        }
+      }
+    } 
+    colnames(list_item) <- list_names 
+    temp <- rbind(temp, list_item) # add button press to master matrix
+  }
+  # All columns are auto set to character type; reformat some to numeric type
+  numCols <- c("buttonID","rawtimeStamp","timeInCurrEnv","tpEpoch","envStartTime","epochStartTime","envIndex","noOfCones","rewAvail_currTP","rewardGained","totalInProgressBar","lifeCounter","predatorLocation","predatorProxPerc","predatorProxX","predatorProxY","predatorDelay","predatorSpeed","predatorIndex_currEnv","predatorTotal_currEnv","timesCaught_currEnv","timeSinceLastForage","timeSinceLastReturnFromHiding","timeSinceLastCheck_cone3","timeSinceLastCheck_cone4","timeSinceLastCheck_cone5","timeSinceLastCheck_cone6","timeSinceLastCheck_cone7","timeSinceLastCheck_cone8","timeSincelastButtonPress")
+  temp[,numCols] <- lapply(temp[,numCols], function(x) as.numeric(as.character(x)))
+  temp$predatorSeen <- ifelse(temp$predatorSeen==TRUE, 1, 0)
+
+  ####################################################################
+  ##################### MAKE EXTRA VARIABLES
+  ####################################################################
+  # Log time stamp relative to first pulse and then remove pulses
+  firstpulsets = cdat$exptDate$startDate # time stamp of 10th pulse that triggered task start (in ms)
+  temp$msec_since_tenth_pulse = (temp$rawtimeStamp-firstpulsets)
+  TR = 1962 # length of TR in ms
+  temp$sec_since_first_pulse_corrected = (temp$msec_since_tenth_pulse+(9*TR))/1000
+  temp <- temp[-c(which(temp$buttonName=='pulse')),] # now omit pulses from data set
+  
+  # Remove disabled button presses
+  # idx_disabled <- which(temp$disabled == TRUE & (temp$buttonName != "stopHiding")) #stop hiding button presses always occur while disabled
+  # if (length(idx_disabled)!=0) {
+  #   disabled_buttons <- temp[c(idx_disabled),] # Keep track of these in case we want them later
+  #   temp <- temp[-c(idx_disabled),]
+  # }
+  
+  # Set zeroes to NANs in rewardGained (maybe unnecessary)
+  idx_rg <- which(temp$rewardGained == 0)
+  if (length(idx_rg) != 0) {temp$rewardGained[idx_rg] = NA}
+  setattr(temp, "row.names", c(1:nrow(temp))) # reset row names so it will index correctly
+
+  # Make simple behavioural measures
+  temp[c("proximity","proxHide","posUncertainty","tpDiscovery","threatSearchDelay")] <- NA # "timeToEnvStart"
+  temp[c("caught","afterEpoch","predatorFirstSeen","failedAttempts")] <- 0
+  totalNoSearchEpochs <- 0 # keep track of in how many epochs this participant DIDN'T search
+  # totalEpochs <- 0 #count epoch number
+  # totalTimesCaught <- 0 #count how many times each participant is caught by the predator
+
+  for (ei in unique(temp$envIndex)[!is.na(unique(temp$envIndex))]) { # separate this participant's environments
+    subset <- temp[which(temp$envIndex == ei),]
+    
+    # Look for rare errors in data logging
+    if (length(unique(subset$predatorSpeed)) > 1) {
+      subset <- subset[which(subset$predatorSpeed == Mode(subset$predatorSpeed)),]
+      temp <- temp[-c(which(temp$envIndex==ei & (temp$predatorSpeed!=Mode(subset$predatorSpeed)))),]
+    }
+    
+    # Flag if a participant had to start over but keep data
+    if (is.unsorted(subset$predatorTotal_currEnv,na.rm=TRUE)){
+      print(paste0("WARNING: participant appears to have started over in epoch ",pt,", envIndex ", ei, ", subject ",pptID))
+    }
+    
+    # Note which epochs ended in getting caught
+    if (max(subset$timesCaught_currEnv)>0) {
+      for (tc in unique(subset$timesCaught_currEnv)[which(unique(subset$timesCaught_currEnv) > 0)]){ #iterate thru nonzero integers
+        epochWhenCaught <- subset$predatorTotal_currEnv[min(which(subset$timesCaught_currEnv==tc))]-1
+        subset$caught[which(subset$predatorTotal_currEnv==epochWhenCaught)] <- 1
+      }
+    }
+    
+    for (pt in as.numeric(unique(subset$predatorTotal_currEnv))) { # separate predator epochs
+      epch <- subset[which(subset$predatorTotal_currEnv == pt),]
+      epochDelay <- as.numeric(na.omit(unique(epch$predatorDelay)))
+      epochSpeed <- as.numeric(na.omit(unique(epch$predatorSpeed)))
+      if (length(which(epch$predatorSeen==1))>0) {
+        if (nrow(epch) > 0 & (length(unique(na.omit(epch$predatorIndex_currEnv)))!=0)) {
+            epch$maxPossTime <- ((unique(epch$predatorDelay[!is.na(epch$predatorDelay)])+epch$predatorSpeed[1])+1.5)*1000
+            discovery_index <- min(which(epch$predatorSeen==1)) # index of discovery
+            epch$predatorFirstSeen[discovery_index] <- 1 #note the action that constitutes the discovery
+            epch$tpDiscovery <- epch$tpEpoch[discovery_index] # timestamp of discovery
+            ms_delay <- as.numeric(unique(epch$predatorDelay)[!is.na(unique(epch$predatorDelay))])*1000 #end of delay, in ms
+            epch$threatSearchDelay <- unique(epch$tpDiscovery)-ms_delay
+            epch$tpEpoch_MinDisc <- epch$tpEpoch - unique(epch$tpDiscovery) # intraepoch time steps corrected for time of predator discovery
+            #now constrain to only monitoring period
+            epch$afterEpoch[which(epch$tpEpoch>(1000*(epochDelay+epochSpeed)))] <- 1  # Note whether actions occurred after delay+speed
+            fullepoch <- epch
+            epch <- epch[which(epch$predatorSeen==1 & (epch$predatorFirstSeen==0) & (epch$afterEpoch==0)),] #constrain to monitoring epoch & exclude discovery action
+            
+            if (nrow(epch)>0) {
+              tpDiscovery <- unique(epch$tpDiscovery) #timepoint of the check where the threat was discovered
+              tpLastCheck <- tpDiscovery # record the timepoint of start of last check sequence in this epoch (default is discovery)
+              for (bp in which(epch$predatorSeen==1)) {
+                epch$proximity[bp] <-  (epch$tpEpoch[bp]/1000) - (epochDelay+epochSpeed)#in seconds
+                epch$proxHide[bp] <- epch$proximity[bp]
+                # posUncertainty: Time since last check, as % of time predator will be on screen
+                epch$posUncertainty[bp] <- ifelse(epch$tpEpoch[bp]==tpDiscovery,NA,
+                                            ((epch$tpEpoch[bp]-tpLastCheck)/1000)/(unique(epch$predatorSpeed)))
+                
+                if (epch$buttonID[bp] > 2) { #if it's a check
+                    tpLastCheck <- epch$tpEpoch[bp] # reset time point of last check to now
+                }
+              }
+            
+              # Log in main dataframe
+              fullepoch[which(fullepoch$predatorSeen==1 & (fullepoch$predatorFirstSeen==0) & (fullepoch$afterEpoch==0)),] <- epch
+              logRows <- which((temp$predatorTotal_currEnv == pt) & (temp$envIndex == ei) & (temp$failedAttempts==0))
+              logCols <- c("tpEpoch","maxPossTime","tpDiscovery","caught","afterEpoch","tpEpoch_MinDisc","proximity","proxHide","posUncertainty","threatSearchDelay","predatorFirstSeen") # "timeToEnvStart"
+              temp[logRows, logCols] <- fullepoch[,logCols]
+            } else { #if there are no rows where predator was seen when discovery action excluded
+              temp[which(temp$predatorTotal_currEnv == pt & (temp$envIndex == ei) & (temp$failedAttempts==0)),] <- fullepoch
+            }
+        }
+      } # end conditional checking if monitoring period exists
+    } # end iterating through predator epochs
+  } # end iterating through environments
+
+  ### Count how much time (s) is spent checking in each time bin, & bin time according to arrival = 0
+  temp <- temp[which(temp$buttonName != "stopHiding" & (temp$predatorSeen==1) & (temp$afterEpoch==0) & (temp$predatorFirstSeen==0) & (temp$failedAttempts==0)),]
+
+  ### Finish formatting across entire matrix
+  temp <- mutate(temp, ParticipantID = pptID)
+  temp <- mutate(temp, checkAction = ifelse(buttonID>2, TRUE, FALSE))
+  temp <- mutate(temp, schedID=cdat$schedID)
+  setattr(temp, "row.names", c(1:nrow(temp))) # always reset row names after row exclusion
+  
+  # Save unstandardized dataframe
+  write.csv(temp,paste0(root,"/",pptID,"_preproExpBehav_postPD_unstandardized_withDisabled.csv"), row.names = FALSE)
+}
+toc()
+```
