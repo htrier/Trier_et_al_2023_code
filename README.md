@@ -39,7 +39,7 @@ Instructions are organized by the figure in which the result is shown. Full fMRI
 -	To reproduce the ANOVAs shown in Figs. 4Ai, 4Bi, 5A, 5E, open a terminal window, navigate to the `/Trier_et_al_2023_code/` folder, and type `jupyter notebook`. Then open the notebook `ANOVAs_Figs_4Ai_4Bi_5A_5E.ipynb`. Update the root path for your computer. Then execute each cell and tables showing the corresponding ANOVAs and post-hoc tests will be produced as output.
 
 ### Figs. 4Aii-iv, 4Bii-iv, 7Ai-Aii, 5b-d, 5f-k, 7Bi-Bii, 7C, 7D
-To reproduce the bar charts from panels 7Ai-Aii, 7Bi-Bii, and 7C, open each of the following scripts in Matlab. Update the root paths for your computer. Ensure that the folder `/Trier_et_al_2023_code/` is included in your Matlab path because it contains the data folder and supporting Matlab functions. Then each script should be able to execute and produce the desired figure without further changes.
+To reproduce the bar charts from panels 7Ai-Aii, 7Bi-Bii, and 7C, open each of the following scripts in Matlab. Update the root paths for your computer. Ensure that the folder `/Trier_et_al_2023_code/` is included in your Matlab path because it contains the data folder and supporting Matlab functions. Ensure that all .zip files in the `/data/` folder are unzipped. Then each script should be able to execute and produce the desired figure without further changes.
 - Fig_4Aii.m
 - Fig_4Aiii.m
 - Fig_4Aiv.m
