@@ -12,9 +12,8 @@ feat_name = 'L1stats_27Apr2022_noTempDerivs_motionRegressors_NoInterestContrasts
 subjects.pre = {'sub103','sub105','sub109','sub111','sub117','sub119','sub121','sub123','sub125','sub127',...
     'sub129','sub131','sub204','sub208','sub212','sub214','sub216','sub218','sub222','sub224','sub228','sub230','sub232'};
 
-% 7Bii. Reward circuit: Replicate reward-related activity during switching
-% to forage.
-roi = {'thresh_zstat1_PrG','striatal_sphere_rad4_dil'};
+% 7Bi. Reward circuit: Replicate constant during switching to forage.
+roi = {'precentral_constant_rad2_7Feb','striatal_sphere_rad4_dil'};
 model.pre = {'timepressure','time','reward','constant'};
 model.post = {'proximity','time','reward','constant'};
 myreg.constant = 4; % index of constant
@@ -25,8 +24,8 @@ condition.pre = 'vigilance_firstForages_constant'; % loads first forage data fro
 condition.post = 'monitoring_firstForages_constant'; % loads first forage data from post-disc. phase
 titles.constant = struct;
 titles.parametric = struct;
-titles.constant.figure = 'Bi. Switch to forage';
-titles.parametric.figure = 'Bii. Reward during switch to forage';
+titles.constant.figure = 'Ei. Switch to forage';
+titles.parametric.figure = 'Eii. Reward during switch to forage';
 titles.constant.filename = 'RewardCircuit-switchToForage-TC-replication_reproduced';
 titles.parametric.filename = 'RewardCircuit-RewardDuringSwitchToForage-TC-replication_reproduced';
 titles.statsfile = 'RewardCircuit-switchToForage-replication-stats_reproduced';
@@ -118,11 +117,6 @@ for phase = {'pre','post'} % iterate through pre- and post-discovery phases
                 dmat(:,1:myreg.constant-1) = zscore(dmat(:,1:myreg.constant-1)); % exclude constant from normalization
                 dmat(:,myreg.constant+1:end) = zscore(dmat(:,myreg.constant+1:end));
                 
-                % Constrain to later post-disc. checks - msec_since_disc
-%                     if strcmp(phase,'post')
-%                         dmat = dmat(ind_top90,:);
-%                     end
-
                 % contrast design matrix
                 contrasts = diag(ones(size(dmat,2),1));
         
@@ -317,11 +311,10 @@ end
 
 % Plot
 % Though we have calculated stats for the constant and parameteric terms, we're only
-% plotting the parametric term here. For this panel we used the ROI mask corresponding 
+% plotting the constant here. For panel 7Bii we used the ROI mask corresponding 
 % to reward-related activity in the precentral gyrus, 'thresh_zstat1_PrG', in 
-% order to replicate reward-related results. For panel 7Bi we used the
-% general precentral gyrus mask. See Fig_7Bi.m.
-for targetReg = {'parametric'}
+% order to replicate reward-related results. See Fig_7Bii.m.
+for targetReg = {'constant'}
     targetReg = targetReg{1};
     figure
 

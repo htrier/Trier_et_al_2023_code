@@ -1,7 +1,7 @@
 %% 1. Select ROIs and model
 clear all; fclose all; clc;
 warning('on','all');
-GLM = 3; % 1=basic or 2=PPI or 3=PPI combining forage and check actions from vigilance phase
+GLM = 3;
 stat = 1;
 textout = 0;
 plot_session = 1;
@@ -17,17 +17,14 @@ feat_name = 'L1stats_27Apr2022_noTempDerivs_motionRegressors_NoInterestContrasts
 subjects = {'sub103','sub105','sub109','sub111','sub117','sub119','sub121','sub123','sub125','sub127',...
     'sub129','sub131','sub204','sub208','sub212','sub214','sub216','sub218','sub222','sub224','sub228','sub230','sub232'};
 
-% Time pressure and successful/unsuccessful check analyses.
-% In this analysis, we still combine both successful and unsuccessful
-% checks.
-roi = {'SN_Pauli','VTA_Nima_Pauli_sub_SN_Pauli','DRN_sub_PAG_edit_sub_SC_edit_ero'};
-seed_roi = {'HB','HB','HB'};
+roi = {'SN_Pauli_dorsolateral','SN_Pauli_ventromedial'};
+seed_roi = {'HB','HB'};
 
 % Load behavioural data
 load(strcat(data_root,'all_subjects_behav_updatedEpochedData_upsample20_minusHalfTR.mat'));
 
 % Set model
-currModel = {'switchToCheck','timepressure','time','reward','seedTC','constant','PPI1_seedTCXswitchToCheck','PPI2_seedTCXtimepressure','PPI3_switchToCheckXtimepressure','PPI4_seedTCXswitchToCheckXtimepressure'};
+currModel = {'switchToCheck','proximity','time','reward','seedTC','constant','PPI1_seedTCXswitchToCheck','PPI2_seedTCXproximity','PPI3_switchToCheckXproximity','PPI4_seedTCXswitchToCheckXproximity'};
 
 % Map regressor names to nice labels for final figures
 regnames = {'switchToCheck','timepressure','time','reward','seedTC','constant',...
@@ -40,27 +37,27 @@ regnames = {'switchToCheck','timepressure','time','reward','seedTC','constant',.
     'PPI3_switchToCheckXproximity','PPI2_seedTCXproximity','PPI4_seedTCXswitchToCheckXproximity',...
     'proximity'};
 reglabels = {'Check','Time pressure','Time','Reward','seedTC','Constant',...
-    'seedTC*Check','seedTC*Time pressure','Check*Time pressure','seedTC*Check*Time pressure',...
+    'seedTC*Check','seedTC*Time pressure','Check*Time pressure','seedTC*Check*Threat level',...
     'Forage','seedTC*Forage','seedTC*Reward','Forage*Reward','seedTC*Forage*Reward',...
     'Forage*Time pressure','seedTC*Forage*Time pressure','Check*Reward','seedTC*Check*Reward',...
-    'Check*Proximity','seedTC*Proximity','seedTC*Check*Proximity','Proximity'};
+    'Check*Proximity','seedTC*Proximity','seedTC*Check*Threat level','Proximity'};
 regLabelMap = containers.Map(regnames, reglabels);
 clear regnames, reglabels;
 
 % Map ROI names to nice labels
 roinames = {'striatal_sphere_rad4_dil','SN_Pauli',...
     'VTA_Nima_Pauli_sub_SN_Pauli','DRN_sub_PAG_edit_sub_SC_edit_ero',...
-    'precentral_constant_rad2_7Feb','ACC_cluster_cope7','insular_cortex_cope7','HB'};
-roilabels = {'Striatum','SN','VTA','DRN','Precentral gyrus','ACC','AI','Hb'};
+    'precentral_constant_rad2_7Feb','ACC_cluster_cope7','insular_cortex_cope7','HB','SN_Pauli_dorsolateral','SN_Pauli_ventromedial'};
+roilabels = {'Striatum','SN','VTA','DRN','Precentral gyrus','ACC','AI','Hb','dlSN','vmSN'};
 roiLabelMap = containers.Map(roinames, roilabels);
 clear roinames, roilabels;
 
 %% 2. Run GLM
-cond = 'vigilance_firstChecks_constant'; % will include both successful and unsuccessful checks
+cond = 'monitoring_firstChecks_constant'; 
 
 % Get data for this condition
-firstChecksData = updatedBehav(strcmp(updatedBehav.action, 'allChecks') & strcmp(updatedBehav.phase, 'vigilance') & updatedBehav.first_check==1, :);
-firstForagesData = updatedBehav(strcmp(updatedBehav.action, 'firstForages') & strcmp(updatedBehav.phase, 'vigilance'), :);
+firstChecksData = updatedBehav(strcmp(updatedBehav.action, 'firstChecks') & strcmp(updatedBehav.phase, 'monitoring') & updatedBehav.first_check==1, :);
+firstForagesData = updatedBehav(strcmp(updatedBehav.action, 'firstForages') & strcmp(updatedBehav.phase, 'monitoring'), :);
 
 for r = 1:length(roi)
     z=0;
@@ -84,10 +81,10 @@ for r = 1:length(roi)
         % load time-series data
         data_identifier = '_minusHalfTR_epoched';
         seed_TC_checks = load([timecourse_dir,subject,'/',feat_name,'/',(['tc_',seed_roi{r},'_',cond,'_upsample',num2str(upsample),data_identifier])]);
-        seed_TC_forages = load([timecourse_dir,subject,'/',feat_name,'/',(['tc_',seed_roi{r},'_vigilance_firstForages_constant_upsample',num2str(upsample),data_identifier])]);
+        seed_TC_forages = load([timecourse_dir,subject,'/',feat_name,'/',(['tc_',seed_roi{r},'_monitoring_firstForages_constant_upsample',num2str(upsample),data_identifier])]);
         
         roi_TC_checks  = load([timecourse_dir,subject,'/',feat_name,'/',(['tc_',roi{r},'_',cond,'_upsample',num2str(upsample),data_identifier])]);
-        roi_TC_forages  = load([timecourse_dir,subject,'/',feat_name,'/',(['tc_',roi{r},'_vigilance_firstForages_constant_upsample',num2str(upsample),data_identifier])]);
+        roi_TC_forages  = load([timecourse_dir,subject,'/',feat_name,'/',(['tc_',roi{r},'_monitoring_firstForages_constant_upsample',num2str(upsample),data_identifier])]);
         
         seed_TC = [seed_TC_checks.trial_data; seed_TC_forages.trial_data];
         roi_TC = [roi_TC_checks.trial_data; roi_TC_forages.trial_data];
@@ -210,6 +207,7 @@ for r = 1:numel(roi)
                 clear window fw
     
             end
+            disp(strcat(roi{r},', phase=',num2str(phase),', reg=',currModel{reg}))
             avg_peak_sec = [avg_peak_sec, time(round(mean(peak_indices)))];
     
             [h,pv,ci,stats]= ttest(peak(:,r));
@@ -229,9 +227,9 @@ for r = 1:numel(roi)
                 beta = squeeze(allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',cdn))(reg,:,:));
                 stdshade(beta',0.15,plt_colour{1},linspace(-pre_win,post_win,nsamples)')
                 if strcmp(currModel{reg}, 'seedTC')
-                    ylim([-.2, .1])
+                    ylim([-.2, .2])
                 else
-                    ylim([-0.1 0.1])
+                    ylim([-0.2 0.2])
                 end
                 xlim([(-pre_win) post_win])
                 set(gca,'fontsize',13)
@@ -252,11 +250,11 @@ for r = 1:numel(roi)
                 ylabel(gca, 'Effect on BOLD signal');
                 hold on
                 %add stars for peaks added
-%                 for pk = 1:length(numsession)
-%                     clear plot
-%                     plot(time(peak_indices(pk)),peak(pk,r),'b*');
-%                     hold on
-%                 end
+                % for pk = 1:length(numsession)
+                %     clear plot
+                %     plot(time(peak_indices(pk)),peak(pk,r),'b*');
+                %     hold on
+                % end
                 % Add star if this roi is significant (uncorrected)
                 if pv_wilcox < 0.05
                     xline(time(round(mean(peak_indices))),'--p');
@@ -296,10 +294,10 @@ for r = 1:numel(roi)
         end
     end
     if makeplot==1
-        sgtitle({strcat("Condition: ",cdn,' | ROI: ',roi{r},' | Seed: ',seed_roi{r}),strcat('Early win: ',num2str(round(time(start_inds(1)),2)),'s-',num2str(round(time(end_inds(1)),2)),'s , Late win:',num2str(round(time(start_inds(2)),2)),'s-',num2str(round(time(end_inds(2)),2)),' | Test: Wilcoxon | Action coding: [-1,1] (normalized)')},'Interpreter','none');
+        sgtitle({strcat('Condition: Post-PD switch to check only + switch to forage | ROI: ',roi{r},' | Seed: ',seed_roi{r}),strcat('Early win: ',num2str(round(time(start_inds(1)),2)),'s-',num2str(round(time(end_inds(1)),2)),'s , Late win:',num2str(round(time(start_inds(2)),2)),'s-',num2str(round(time(end_inds(2)),2)),' | Test: Wilcoxon | Action coding: [-1,1] (normalized)')},'Interpreter','none');
         pos = get(gcf, 'Position');
         set(gcf, 'Position',pos+[500 0 500 200])
     end
 end
-% savename=strcat(results_root,'PPI_HbxTimepressurexCheck-to-subcortical_allChecksVsForage_reproduced.xlsx');
+% savename=strcat(results_root,'PPI_HbxTimepressurexCheck-to-subcortical_successfulCheckVsForage_reproduced.xlsx');
 % writetable(allstats,savename{1},'WriteRowNames',false)

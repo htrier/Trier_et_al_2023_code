@@ -281,7 +281,7 @@ for r = 1:numel(roi)
         end
     end
     if makeplot==1
-        sgtitle({strcat('Condition: successful switch to check only | ROI: ',roi{r},' | Seed: ',seed_roi{r}),strcat('Early win: ',num2str(round(time(start_inds(1)),2)),'s-',num2str(round(time(end_inds(1)),2)),'s , Late win:',num2str(round(time(start_inds(2)),2)),'s-',num2str(round(time(end_inds(2)),2)),' | Test: Wilcoxon | Action coding: [-1,1] (normalized)')},'Interpreter','none');
+        sgtitle({strcat('Condition: Unsuccessful switch to check only | ROI: ',roi{r},' | Seed: ',seed_roi{r}),strcat('Early win: ',num2str(round(time(start_inds(1)),2)),'s-',num2str(round(time(end_inds(1)),2)),'s , Late win:',num2str(round(time(start_inds(2)),2)),'s-',num2str(round(time(end_inds(2)),2)),' | Test: Wilcoxon | Action coding: [-1,1] (normalized)')},'Interpreter','none');
         pos = get(gcf, 'Position');
         set(gcf, 'Position',pos+[500 0 500 200])
     end

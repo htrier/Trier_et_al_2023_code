@@ -16,14 +16,14 @@ feat_name = 'L1stats_27Apr2022_noTempDerivs_motionRegressors_NoInterestContrasts
 subjects = {'sub103','sub105','sub109','sub111','sub117','sub119','sub121','sub123','sub125','sub127',...
     'sub129','sub131','sub204','sub208','sub212','sub214','sub216','sub218','sub222','sub224','sub228','sub230','sub232'};
 
-roi = {'DRN_sub_PAG_edit_sub_SC_edit_ero','HB','SN_Pauli'};
-seed_roi = {'none','none','none'};
+roi = {'SN_Pauli_dorsolateral','SN_Pauli_ventromedial'};
+seed_roi = {'none','none'};
 
 % Load behavioural data
 load(strcat(data_root,'all_subjects_behav_updatedEpochedData_upsample20_minusHalfTR.mat'));
 
 % Set model
-currModel = {'proximity','time','reward','constant'};
+currModel = {'switchToCheck','proximity','time','reward','constant','PPI3_switchToCheckXproximity'};
 
 % Map regressor names to nice labels for final figures
 regnames = {'switchToCheck','timepressure','time','reward','seedTC','constant',...
@@ -35,7 +35,7 @@ regnames = {'switchToCheck','timepressure','time','reward','seedTC','constant',.
     'PPI3_switchToCheckXreward','PPI4_seedTCXswitchToCheckXreward',...
     'PPI3_switchToCheckXproximity','PPI2_seedTCXproximity','PPI4_seedTCXswitchToCheckXproximity',...
     'proximity'};
-reglabels = {'Check','Time pressure','Time','Reward','seedTC','Constant',...
+reglabels = {'Predator Discovery','Time pressure','Time','Reward','seedTC','Constant',...
     'seedTC*Check','seedTC*Time pressure','Check*Time pressure','seedTC*Check*Time pressure',...
     'Forage','seedTC*Forage','seedTC*Reward','Forage*Reward','seedTC*Forage*Reward',...
     'Forage*Time pressure','seedTC*Forage*Time pressure','Check*Reward','seedTC*Check*Reward',...
@@ -46,15 +46,16 @@ clear regnames, reglabels;
 % Map ROI names to nice labels
 roinames = {'striatal_sphere_rad4_dil','SN_Pauli',...
     'VTA_Nima_Pauli_sub_SN_Pauli','DRN_sub_PAG_edit_sub_SC_edit_ero',...
-    'precentral_constant_rad2_7Feb','ACC_cluster_cope7','insular_cortex_cope7','HB'};
-roilabels = {'Striatum','SN','VTA','DRN','Precentral gyrus','ACC','AI','Hb'};
+    'precentral_constant_rad2_7Feb','ACC_cluster_cope7','insular_cortex_cope7','HB','SN_Pauli_dorsolateral','SN_Pauli_ventromedial'};
+roilabels = {'Striatum','SN','VTA','DRN','Precentral gyrus','ACC','AI','Hb','dlSN','vmSN'};
 roiLabelMap = containers.Map(roinames, roilabels);
 clear roinames, roilabels;
 
 %% 2. Run GLM
-cond = 'monitoring_firstForages_constant';
+cond = 'monitoring_firstChecks_constant';
 
 % Get data for this condition
+firstChecksData = updatedBehav(strcmp(updatedBehav.action, 'firstChecks') & strcmp(updatedBehav.phase, 'monitoring') & updatedBehav.first_check==1, :);
 firstForagesData = updatedBehav(strcmp(updatedBehav.action, 'firstForages') & strcmp(updatedBehav.phase, 'monitoring'), :);
 
 for r = 1:length(roi)
@@ -63,21 +64,28 @@ for r = 1:length(roi)
         subject = subjects{a};
         z = z+1;
     
+        subj_firstChecksData = firstChecksData(strcmp(firstChecksData.subjectNumber, subject), :);
         subj_firstForagesData = firstForagesData(strcmp(firstForagesData.subjectNumber, subject), :);
     
         % Run time course
-        REG.time = subj_firstForagesData.('onset');
-        REG.constant = ones (length (REG.time),1);
-        REG.reward = subj_firstForagesData.('reward');
-        REG.proximity = subj_firstForagesData.('proximity');
+        REG.switchToCheck = [repmat(1,[size(subj_firstChecksData,1),1]); repmat(-1,[size(subj_firstForagesData,1),1])]; %1=check, -1=forage
+        REG.switchToForage = [repmat(-1,[size(subj_firstChecksData,1),1]); repmat(1,[size(subj_firstForagesData,1),1])]; %-1=check, 1=forage
+        REG.constant = ones (length (REG.switchToCheck),1);
+        REG.time = [subj_firstChecksData.('onset'); subj_firstForagesData.('onset')]; % checks, then forages
+        REG.reward = [subj_firstChecksData.('reward'); subj_firstForagesData.('reward')]; % checks, then forages
+        REG.timepressure = [subj_firstChecksData.('timePressure'); subj_firstForagesData.('timePressure')];
+        REG.posUncertainty = [subj_firstChecksData.('posUncertainty'); subj_firstForagesData.('posUncertainty')];
+        REG.proximity = [subj_firstChecksData.('proximity'); subj_firstForagesData.('proximity')];
 
         % load time-series data
         data_identifier = '_minusHalfTR_epoched';
         
+        roi_TC_checks  = load([timecourse_dir,subject,'/',feat_name,'/',(['tc_',roi{r},'_',cond,'_upsample',num2str(upsample),data_identifier])]);
         roi_TC_forages  = load([timecourse_dir,subject,'/',feat_name,'/',(['tc_',roi{r},'_monitoring_firstForages_constant_upsample',num2str(upsample),data_identifier])]);
-        roi_TC = roi_TC_forages.trial_data;
+        
+        roi_TC = [roi_TC_checks.trial_data; roi_TC_forages.trial_data];
 
-        clear roi_TC_forages
+        clear roi_TC_checks roi_TC_forages
     
         % run GLM
         betaOut = NaN(size(currModel,2),size(roi_TC,2));
@@ -117,10 +125,10 @@ for r = 1:length(roi)
     
             % beta X time output
             betaOut(:,i) = ols(roi_TC(:,i),dmat,contrasts);
-            clear dmat contrasts REG.time REG.constant
+            clear dmat contrasts REG.checkNotForage REG.time REG.constant
         end
     
-        allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',cond))(:,:,z) = betaOut;
+        allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',strcat([cond,'_plus_firstForages'])))(:,:,z) = betaOut;
         clear betaOut
     end
 end
@@ -160,6 +168,7 @@ for r = 1:numel(roi)
         end_ind = end_inds(phase);
         
         % find peak in a specified window
+        cdn = strcat([cond,'_plus_firstForages']);
         z = 1;
         for reg = 1:length(currModel) % iterate through regressors (reg = 1 for just doing PPI stats)
     %         if makeplot==1
@@ -179,13 +188,13 @@ for r = 1:numel(roi)
             for s = 1:length(numsession) % iterate through participants
     
                 numsession(s) = []; % drop this participant
-                window  = mean(squeeze(allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',cond))(reg,:,numsession)),2); %avg across all timepoints for this participant/condition
+                window  = mean(squeeze(allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',cdn))(reg,:,numsession)),2); %avg across all timepoints for this participant/condition
     
                 [m,i]  = max(abs(window(start_ind:end_ind)));
                 i      = i + (start_ind-1);
                 peak_indices = [peak_indices, i];
-                val_tzero = [val_tzero, allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',cond))(reg,22,s)]; %index 22 is the sample corresponding to zero
-                peak(s,r) = allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',cond))(reg,i,s);
+                val_tzero = [val_tzero, allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',cdn))(reg,22,s)]; %index 22 is the sample corresponding to zero
+                peak(s,r) = allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',cdn))(reg,i,s);
     
                 numsession = 1:numel(subjects);
                 clear window fw
@@ -208,10 +217,10 @@ for r = 1:numel(roi)
             % Plot group aggregate with significance line
             if makeplot==1
                 subplot(2, round(length(currModel)/2), z);
-                beta = squeeze(allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',cond))(reg,:,:));
+                beta = squeeze(allBeta.(sprintf('%s',feat_name)).(sprintf('%s',roi{r},'_',num2str(r))).(sprintf('%s',cdn))(reg,:,:));
                 stdshade(beta',0.15,plt_colour{1},linspace(-pre_win,post_win,nsamples)')
                 if strcmp(currModel{reg}, 'seedTC')
-                    ylim([-.2, .2])
+                    ylim([-.2, .1])
                 else
                     ylim([-0.2 0.2])
                 end
@@ -240,9 +249,9 @@ for r = 1:numel(roi)
                 %     hold on
                 % end
                 % Add star if this roi is significant (uncorrected)
-                % if pv_wilcox < 0.05
-                %     xline(time(round(mean(peak_indices))),'--p');
-                % end
+                if pv_wilcox < 0.05
+                    xline(time(round(mean(peak_indices))),'--p');
+                end
                 z = z+1;
                 ax = gca; 
                 ax.FontSize = 16;
@@ -253,7 +262,7 @@ for r = 1:numel(roi)
             [bonf_p, bonf_h] = bonf_holm(p);
     
             % Log stats
-            Condition = {cond};
+            Condition = {cdn};
             Regressor = {currModel{reg}}; 
             ROI = {roi{r}};
             Seed = {seed_roi{r}};
@@ -262,24 +271,26 @@ for r = 1:numel(roi)
             T_stats = t;
             df = dfs;
             Avg_peak_sec = avg_peak_sec;
-            Peak_search_window = {strcat([num2str(round(time(start_ind),2)),'s-',num2str(round(time(end_ind),2)),'s'])};
+            Peak_search_window = {strcat([num2str(round(time(start_ind),2)),'s-',num2str(round(time(end_ind),2)),'s'])};  % repmat({strcat([num2str(round(time(start_ind),2)),'s-',num2str(round(time(end_ind),2)),'s'])},1,length(roi))';
             Mean = all_means;
             SD = all_sd;
             p_wilcoxon = pv_wilcox;
             zval_wilcoxon = stats_wilcox.zval;
             signedrank_wilcoxon = stats_wilcox.signedrank;
-            Full_model = {strrep(strjoin(currModel),' ',' + ')};  
+            Full_model = {strrep(strjoin(currModel),' ',' + ')};  % repmat({strrep(strjoin(currModel),' ',' + ')},1,length(roi))';
             Peak_vals = all_peak_vals';
     
             temp_stats = table(Condition,Regressor,ROI,Seed,Uncorrected_pvalue,Significant,T_stats,df,Avg_peak_sec,...
                 Peak_search_window,Mean,SD,p_wilcoxon,zval_wilcoxon,signedrank_wilcoxon,Full_model,Peak_vals); % HolmBonf_corrected_pvalue, p_wilcoxon_uncorrected, p_wilcoxon_corrected, zval_wilcoxon
             allstats = [allstats;temp_stats];
-            clear Condition Regressor ROI Seed Uncorrected_pvalue Significant temp_stats T_stats dfs SD Peak_vals all_peak_vals signedrank_wilcoxon zval_wilcoxon p_wilcoxon% HolmBonf_corrected_pvalue
+            clear Condition Regressor ROI Seed Uncorrected_pvalue Significant temp_stats T_stats dfs Mean SD Peak_vals all_peak_vals signedrank_wilcoxon zval_wilcoxon p_wilcoxon% HolmBonf_corrected_pvalue
         end
     end
     if makeplot==1
-        sgtitle({strcat('Condition: switch to forage only | ROI: ',roi{r},' | Seed: ',seed_roi{r}),strcat('Early win: ',num2str(round(time(start_inds(1)),2)),'s-',num2str(round(time(end_inds(1)),2)),'s , Late win:',num2str(round(time(start_inds(2)),2)),'s-',num2str(round(time(end_inds(2)),2)),' | Test: Wilcoxon | Action coding: [-1,1] (normalized)')},'Interpreter','none');
+        sgtitle({strcat('Condition: post-PD successful switch to check + switch to forage | ROI: ',roi{r},' | Seed: ',seed_roi{r}),strcat('Early win: ',num2str(round(time(start_inds(1)),2)),'s-',num2str(round(time(end_inds(1)),2)),'s , Late win:',num2str(round(time(start_inds(2)),2)),'s-',num2str(round(time(end_inds(2)),2)),' | Test: Wilcoxon | Action coding: [-1,1] (normalized)')},'Interpreter','none');
         pos = get(gcf, 'Position');
         set(gcf, 'Position',pos+[500 0 500 200])
     end
 end
+% savename=strcat(results_root,'PPI_HbxTimepressurexCheck-to-subcortical_successfulCheckVsForage_reproduced.xlsx');
+% writetable(allstats,savename{1},'WriteRowNames',false)

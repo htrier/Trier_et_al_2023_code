@@ -13,8 +13,8 @@ feat_name = 'L1stats_27Apr2022_noTempDerivs_motionRegressors_NoInterestContrasts
 subjects.pre = {'sub103','sub105','sub109','sub111','sub117','sub119','sub121','sub123','sub125','sub127',...
     'sub129','sub131','sub204','sub208','sub212','sub214','sub216','sub218','sub222','sub224','sub228','sub230','sub232'};
 
-% 7Ai. & 7Aii. Threat circuit: Replicate constant & threat in first checks
-roi = {'ACC_cluster_cope7','insular_cortex_cope7'};
+% Threat circuit: Replicate constant & threat in first checks
+roi = {'HB','SN_Pauli','VTA_Nima_Pauli_sub_SN_Pauli'}; % 'DRN_sub_PAG_edit_sub_SC_edit_ero'
 model.pre = {'timepressure','time','reward','constant'};
 model.post = {'proximity','time','reward','constant'};
 myreg.constant = struct;
@@ -25,8 +25,8 @@ condition.pre = 'vigilance_firstChecks_constant'; % loads first forage data from
 condition.post = 'monitoring_firstChecks_constant'; % loads first forage data from post-disc. phase
 titles.constant = struct;
 titles.parametric = struct;
-titles.constant.figure = 'Di. Switch to check';
-titles.parametric.figure = {'ii. Threat level', 'during switch to check'};
+titles.constant.figure = 'Fi. Switch to check';
+titles.parametric.figure = {'Fii. Threat level', 'during switch to check'};
 titles.constant.filename = 'ThreatCircuit-switchToCheck-TC-replication_reproduced';
 titles.parametric.filename = 'ThreatCircuit-ThreatDuringSwitchToCheck-TC-replication_reproduced';
 titles.statsfile = 'ThreatCircuit-switchToCheck-replication-stats';
