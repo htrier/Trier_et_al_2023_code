@@ -10,7 +10,7 @@ This directory contains code and data to reproduce results presented in the manu
 - Matlab R2023b with Statistics and Machine Learning Toolbox
 
 ## Installation guide
-- Download R here: https://cran.r-project.org) and RStudio here: https://posit.co/download/rstudio-desktop/. 
+- Download R here: https://cran.r-project.org and RStudio here: https://posit.co/download/rstudio-desktop/. 
 - Install the required R packages by entering install.packages(‘name_of_package’) in the RStudio console.
 - Install Jupyter by entering ‘pip3 install jupyter’ at the command line.
 - Install each python package by entering ‘pip3 install package==version’ at the command line.
@@ -29,28 +29,42 @@ Instructions are organized by the figure in which the result is shown. Full fMRI
 -	Open `model_behavior.Rmd`. Update the root paths for your computer. Run all cells to model choice and RT data and reproduce figures 1H-L. Runtime: When re-running all bayesian models, runtime is up to 10 hours depending on system specs. However, the model output is shared in the `/data/` folder and the code has an option to read in that data and quickly reproduce the figures with it.
 -	Reproducibility: Please note that Markov chain Monte Carlo is a stochastic algorithm. In theory each time the algorithm is run it generates a different Markov chain and therefore different Markov chain Monte Carlo estimators. These estimators will converge to the same answer only for infinitely long Markov chains. Thus, finite Markov chains and the subsequent estimators are not fully reproducible. We have included in the `/results/` folder the model results reported in our manuscript. Re-running the code should produce a very similar result. In addition, the R function ggplot does not plot jittered data points at the same exact position every time, so plots may look slightly different than the manuscript. However, testing our model results with the code will reproduce the ttest statistics reported in the supplementary materials.
 
-### Figs. 2D-E, 6C-D
--	Open a terminal window, navigate to the `/Trier_et_al_2023_code/` folder, and type `jupyter notebook`. Then open the notebook `Plot_and_test_avg_ROI_activations.ipynb`. Update the root paths for your computer. Running all cells in the notebook will reproduce the bar charts from Fig. 2D-E, 6C-D, and create a statistics table called ‘all_stats’.
+### Figs. 2B-C, 4B-C, S2C-D
+-	Open a terminal window, navigate to the `/Trier_et_al_2023_code/` folder, and type `jupyter notebook`. Then open the notebook `Plot_and_test_avg_ROI_activations.ipynb`. Update the root paths for your computer. Running all cells in the notebook will reproduce the bar charts from Fig. 2B-C, 4B-C, and S2C-D, and create a statistics table called ‘all_stats’.
 
-### Figs. 3a-b, 7Aiii-Aiv
--	To reproduce the correlations shown in Figures 3a, 3b, 7Aiii, and 7Aiv, open a terminal window, nativate to the `/Trier_et_al_2023_code/` folder, and type `jupyter notebook`. Then open the notebook `Figs_3a_3b_7Aiii_7Aiv.ipynb`. Update the root paths for your computer. Then execute each cell and the figures and corresponding statistics tables will be produced as output. Some text in the notebook further describes the behavioural measures being used.
+### Figs. 2D-E, S9
+-	To reproduce the correlations shown in Figure panels 2D-E, open a terminal window, nativate to the `/Trier_et_al_2023_code/` folder, and type `jupyter notebook`. Then open the notebooks `Fig_2DE.ipynb` and `Fig_S9.ipynb`. Update the root paths for your computer. Then execute each cell and the figures and corresponding statistics tables will be produced as output. Some text in the notebook further describes the behavioural measures being used.
 
-### ANOVAs shown in Figs. 4Ai, 4Bi, 5A, 5E
--	To reproduce the ANOVAs shown in Figs. 4Ai, 4Bi, 5A, 5E, open a terminal window, navigate to the `/Trier_et_al_2023_code/` folder, and type `jupyter notebook`. Then open the notebook `ANOVAs_Figs_4Ai_4Bi_5A_5E.ipynb`. Update the root path for your computer. Then execute each cell and tables showing the corresponding ANOVAs and post-hoc tests will be produced as output.
+### ANOVAs shown in Fig. 5Ai, 5Bi
+-	To reproduce the ANOVAs shown in Figs. 5Ai and 5Bi, open a terminal window, navigate to the `/Trier_et_al_2023_code/` folder, and type `jupyter notebook`. Then open the notebook `ANOVAs.ipynb`. Update the root path for your computer. Then execute each cell and tables showing the corresponding ANOVAs and post-hoc tests will be produced as output.
 
-### Figs. 4Aii-iv, 4Bii-iv, 7Ai-Aii, 5b-d, 5f-k, 7Bi-Bii, 7C, 7D
-To reproduce the bar charts from panels 7Ai-Aii, 7Bi-Bii, and 7C, open each of the following scripts in Matlab. Update the root paths for your computer. Ensure that the folder `/Trier_et_al_2023_code/` is included in your Matlab path because it contains the data folder and supporting Matlab functions. Ensure that all .zip files in the `/data/` folder are unzipped. Then each script should be able to execute and produce the desired figure without further changes.
-- Fig_4Aii.m
-- Fig_4Aiii.m
-- Fig_4Aiv.m
-- Fig_4Bii.m
-- Fig_4Biii.m
-- Fig_4Biv.m
-- Fig_5bcd.m
-- Fig_5fgh.m
-- Fig_5ijk.m
-- Figs_7Ai_7Aii.m
-- Fig_7Bi.m
-- Fig_7Bii.m
-- Fig_7C.m
-- Fig_7D.m
+### Figs. 2F, 3, 4D, 5Aii-Av, 5Bii-Bv, S2E, S4-8
+To reproduce panels from Figs. 2F, 3, 4D, 5Aii-Av, 5Bii-Bv, S2E, S4-8, open each of the following scripts in Matlab. Update the root paths for your computer. Ensure that the folder `/Trier_et_al_2023_code/` is included in your Matlab path because it contains the data folder and supporting Matlab functions. Ensure that all .zip files in the `/data/` folder are unzipped. Then each script should be able to execute and produce the desired figure without further changes.
+- Fig_2F.m
+- Fig3AB.m
+- Fig3CD.m
+- Fig3EF.m
+- Fig3G_FigS4AC.m
+- Fig3H_FigS4BD.m
+- FigS3.m
+- FigS4E.m
+- FigS5AB.m
+- FigS5CD.m
+- FigS7AB.m
+- FigS7CD.m
+- FigS7EF.m
+- FigS7G_S8AC.m
+- FigS7H_S8BD.m
+- FigS8E.m
+- Fig_2F.m
+- Fig_4D.m
+- Fig_5Aii.m
+- Fig_5Aiii.m
+- Fig_5Aiv.m
+- Fig_5Av.m
+- Fig_5Bii.m
+- Fig_5Biii.m
+- Fig_5Biv.m
+- Fig_5Bv.m
+- Fig_S2Ei.m
+- Fig_S2Eii.m
